@@ -16,6 +16,10 @@ setup(
     license='BSD',
     py_modules=['intake_s3_manifests'],
     packages=find_packages(),
+    entry_points={
+        'intake.drivers': [
+            's3_manifest = intake_s3_manifests.s3_manifest:S3ManifestSource',
+        ]},
     package_data={'': ['*.csv', '*.yml', '*.html']},
     include_package_data=True,
     install_requires=requires,
