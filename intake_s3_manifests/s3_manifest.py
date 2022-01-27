@@ -82,19 +82,36 @@ class S3ManifestSource(DataSource):
         with self._open_manifest(self._urlpath) as f:
             manifest_meta = json.load(f)
             manifests = [file['key'] for file in manifest_meta['files']]
+            manifest_format = manifest_meta['fileFormat'].lower()
 
-            partitions = [
-                dd.read_csv('{prefix}{bucket}/{key}'.format(
-                        prefix=self._s3_prefix, 
-                        bucket=self._manifest_bucket,
-                        key=manifest),
-                    names=['Bucket', 'Key', 'Size', 'Created'], 
-                    compression='gzip', 
-                    blocksize=None
-                )
-                for manifest in manifests
-            ]
+            if manifest_format == 'csv':
+                #columns_fmt = pd.read_csv(io.StringIO(manifest_meta['fileSchema'])).columns
+                columns_fmt = [column.strip() for column in manifest_meta['fileSchema'].split(",")]
+                date_columns = [col for col in columns_fmt if "Date" in col]
+                column_dtypes = {
+                    col: bool if col.startswith("Is") else str 
+                    for col in columns_fmt 
+                    if "Date" not in col and col != "Size"
+                }
+                column_dtypes["Size"] = int
+                
+                partitions = [
+                    dd.read_csv('{prefix}{bucket}/{key}'.format(
+                            prefix=self._s3_prefix, 
+                            bucket=self._manifest_bucket,
+                            key=manifest),
+                        names=columns_fmt,
+                        parse_dates=date_columns,
+                        dtype=column_dtypes,
+                        blocksize=None) 
+                    for manifest in manifests
+                ]
+            else:
+                raise NotImplemented(f"Manifest fileSchmea of '{manifest_format}' is not supported")
+
             df = dd.concat(partitions)
+
+            # Remove the manifest if it's self-referential
             df = df[~df['Key'].str.contains("/{source_bucket}/{config_id}/".format(source_bucket=self._source_bucket, config_id=self._config_id))]
             if self._extract_key_regex is not None:
                 metadata = df.Key.str.extract(self._extract_key_regex, expand=False)
