@@ -16,7 +16,7 @@ class S3ManifestSource(DataSource):
     partition_access = True
 
     def __init__(self, manifest_bucket, source_bucket, config_id, manifest_date='latest', s3_prefix='s3://', s3_manifest_kwargs=None,
-                 extract_key_regex=None, s3_anon=True, metadata=None):
+                 extract_key_regex=None, s3_anon=True, **kwargs):
         """
         Parameters
         ----------
@@ -47,6 +47,7 @@ class S3ManifestSource(DataSource):
         s3_anon: bool
             When reading manifests from S3 (s3_prefix = "s3://") then do so with out sending credentials. Default is True.
         """
+        super().__init__(**kwargs)
         self._manifest_bucket = manifest_bucket
         self._source_bucket = source_bucket
         self._manifest_date = manifest_date
