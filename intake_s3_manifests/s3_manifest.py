@@ -3,6 +3,8 @@ from . import __version__
 from intake.source.base import DataSource, Schema
 
 import json
+import io
+import pandas as pd
 import dask.dataframe as dd
 from datetime import datetime, timedelta
 import s3fs
@@ -83,6 +85,7 @@ class S3ManifestSource(DataSource):
             manifest_meta = json.load(f)
             manifests = [file['key'] for file in manifest_meta['files']]
             manifest_format = manifest_meta['fileFormat'].lower()
+            self._manifest_meta = manifest_meta
 
             if manifest_format == 'csv':
                 #columns_fmt = pd.read_csv(io.StringIO(manifest_meta['fileSchema'])).columns
