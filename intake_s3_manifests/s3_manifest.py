@@ -142,15 +142,15 @@ class S3ManifestSource(DataSource):
                       })
 
     def _get_partition(self, i):
-        self._get_schema()
+        self._open_dataset()
         return self._dataframe.get_partition(i).compute()
 
     def read(self):
-        self._get_schema()
+        self._get_open_dataset()
         return self._dataframe.compute()
 
     def to_dask(self):
-        self._get_schema()
+        self._open_dataset()
         return self._dataframe
 
     def _close(self):
