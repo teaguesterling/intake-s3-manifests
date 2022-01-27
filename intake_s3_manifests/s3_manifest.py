@@ -2,12 +2,7 @@
 from . import __version__
 from intake.source.base import DataSource, Schema
 
-import json
-import io
-import pandas as pd
-import dask.dataframe as dd
 from datetime import datetime, timedelta
-import s3fs
 
 
 class S3ManifestSource(DataSource):
@@ -69,70 +64,82 @@ class S3ManifestSource(DataSource):
             self._extract_key_regex = r'%s' % extract_key_regex
         self._s3_manifest_kwargs = s3_manifest_kwargs or {}
         self._dataframe = None
+        self._manifest_meta = None
 
     def _open_manifest(self, url):
         if self._s3_prefix.split('/')[0] == 's3:':
             # s3 :- use `s3fs`
+            import s3fs
             fs = s3fs.S3FileSystem(anon=self._s3_anon)
             return fs.open(url, 'rb')
         else:
             # other :- use `open`
             return open(url, 'rb')
 
+    def _get_manifest(self):
+        if self._manifest_meta is None:
+            import json
+            with self._open_manifest(self._urlpath) as f:
+                self._manifest_meta = json.load(f)
+        return self._manifest_meta
+    
     def _open_dataset(self):
+        import dask.dataframe as dd
+        schema = self._get_schema()
+        manifests = [file['key'] for file in schema['extra_metadata']['manifest_meta']['files']]
+        if schema['extra_metadata']['manifest_format'] == 'csv':
+            date_columns = schema['extra_metadata']['date_columns']
+            dtypes = schema['dtype']
+            other_dtypes = {k: v for k, v in dtypes.items() if k not in date_columns}
+            partitions = [
+                dd.read_csv('{prefix}{bucket}/{key}'.format(
+                        prefix=self._s3_prefix, 
+                        bucket=self._manifest_bucket,
+                        key=manifest),
+                    names=list(dtypes),
+                    parse_dates=date_columns,
+                    dtype=other_dtypes,
+                    blocksize=None) 
+                for manifest in manifests
+            ]
+        else:
+            raise NotImplemented(f"Manifest fileSchmea of '{manifest_format}' is not supported")
 
-        with self._open_manifest(self._urlpath) as f:
-            manifest_meta = json.load(f)
-            manifests = [file['key'] for file in manifest_meta['files']]
-            manifest_format = manifest_meta['fileFormat'].lower()
-            self._manifest_meta = manifest_meta
+        df = dd.concat(partitions)
 
-            if manifest_format == 'csv':
-                #columns_fmt = pd.read_csv(io.StringIO(manifest_meta['fileSchema'])).columns
-                columns_fmt = [column.strip() for column in manifest_meta['fileSchema'].split(",")]
-                date_columns = [col for col in columns_fmt if "Date" in col]
-                column_dtypes = {
-                    col: bool if col.startswith("Is") else str 
-                    for col in columns_fmt 
-                    if "Date" not in col and col != "Size"
-                }
-                column_dtypes["Size"] = int
-                
-                partitions = [
-                    dd.read_csv('{prefix}{bucket}/{key}'.format(
-                            prefix=self._s3_prefix, 
-                            bucket=self._manifest_bucket,
-                            key=manifest),
-                        names=columns_fmt,
-                        parse_dates=date_columns,
-                        dtype=column_dtypes,
-                        blocksize=None) 
-                    for manifest in manifests
-                ]
-            else:
-                raise NotImplemented(f"Manifest fileSchmea of '{manifest_format}' is not supported")
-
-            df = dd.concat(partitions)
-
-            # Remove the manifest if it's self-referential
-            df = df[~df['Key'].str.contains("/{source_bucket}/{config_id}/".format(source_bucket=self._source_bucket, config_id=self._config_id))]
-            if self._extract_key_regex is not None:
-                metadata = df.Key.str.extract(self._extract_key_regex, expand=False)
-                df = dd.concat([df, metadata], axis=1)
+        # Remove the manifest if it's self-referential
+        #df = df[~df['Key'].str.contains("/{source_bucket}/{config_id}/".format(source_bucket=self._source_bucket, config_id=self._config_id))]
+        if self._extract_key_regex is not None:
+            metadata = df.Key.str.extract(self._extract_key_regex, expand=False)
+            df = dd.concat([df, metadata], axis=1)
 
         self._dataframe = df
 
     def _get_schema(self):
-        if self._dataframe is None:
-            self._open_dataset()
-
-        dtypes = self._dataframe._meta.dtypes.to_dict()
-        dtypes = {n: str(t) for (n, t) in dtypes.items()}
+        manifest_meta = self._get_manifest()
+        manifest_format = manifest_meta['fileFormat'].lower()
+        if manifest_format == 'csv':
+            #columns_fmt = pd.read_csv(io.StringIO(manifest_meta['fileSchema'])).columns
+            columns_fmt = [column.strip() for column in manifest_meta['fileSchema'].split(",")]
+            date_columns = [col for col in columns_fmt if "Date" in col]
+            other_dtypes = {
+                col: bool if col.startswith("Is") else str 
+                for col in columns_fmt 
+                if "Date" not in col and col != "Size"
+            }
+            column_dtypes["Size"] = int
+        dtypes = other_dtypes.copy()
+        dtypes.update({key: datetime for key in date_columns})
+        num_files = len(manifest_meta['files'])
         return Schema(datashape=None,
                       dtype=dtypes,
                       shape=(None, len(dtypes)),
-                      npartitions=self._dataframe.npartitions,
-                      extra_metadata={})
+                      npartitions=num_files,
+                      extra_metadata={
+                          'manifest_format': manifest_format,
+                          'date_columns': date_columns,
+                          'manifest_meta': manifest_meta
+                      })
 
     def _get_partition(self, i):
         self._get_schema()
