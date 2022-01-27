@@ -127,7 +127,7 @@ class S3ManifestSource(DataSource):
                 for col in columns_fmt 
                 if "Date" not in col and col != "Size"
             }
-            column_dtypes["Size"] = int
+            other_dtypes["Size"] = int
         dtypes = other_dtypes.copy()
         dtypes.update({key: datetime for key in date_columns})
         num_files = len(manifest_meta['files'])
