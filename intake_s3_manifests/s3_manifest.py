@@ -86,8 +86,9 @@ class S3ManifestSource(DataSource):
     def _open_dataset(self):
         import dask.dataframe as dd
         schema = self._get_schema()
-        manifests = [file['key'] for file in schema['extra_metadata']['manifest_meta']['files']]
+        manifests = [file['key'] for file in self._get_manifest()['files']]
         if schema['extra_metadata']['manifest_format'] == 'csv':
+            columns = schema['extra_metadata']['column_order']
             date_columns = schema['extra_metadata']['date_columns']
             dtypes = schema['dtype']
             other_dtypes = {k: v for k, v in dtypes.items() if k not in date_columns}
@@ -96,7 +97,7 @@ class S3ManifestSource(DataSource):
                         prefix=self._s3_prefix, 
                         bucket=self._manifest_bucket,
                         key=manifest),
-                    names=list(dtypes),
+                    names=columns,
                     parse_dates=date_columns,
                     dtype=other_dtypes,
                     blocksize=None) 
@@ -115,31 +116,46 @@ class S3ManifestSource(DataSource):
 
         self._dataframe = df
 
+    def _get_csv_schema(self, manifest_meta):
+        #columns_fmt = pd.read_csv(io.StringIO(manifest_meta['fileSchema'])).columns
+        columns_fmt = [column.strip() for column in manifest_meta['fileSchema'].split(",")]
+        date_columns = [col for col in columns_fmt if "Date" in col]
+        other_dtypes = {
+            col: bool if col.startswith("Is") else "category"
+            for col in columns_fmt 
+            if "Date" not in col and col != "Size"
+        }
+        other_dtypes["Size"] = int
+        other_dtypes["Bucket"] = str
+        other_dtypes["Key"] = str
+        other_dtypes["ETag"] = str
+        dtypes = other_dtypes.copy()
+        dtypes.update({key: datetime for key in date_columns})
+        
+        extra_metadata = {
+            'column_order': columns_fmt,
+            'manifest_format': manifest_format,
+            'date_columns': date_columns,
+        }
+        return dtypes, extra_metadata
+
     def _get_schema(self):
         manifest_meta = self._get_manifest()
         manifest_format = manifest_meta['fileFormat'].lower()
-        if manifest_format == 'csv':
-            #columns_fmt = pd.read_csv(io.StringIO(manifest_meta['fileSchema'])).columns
-            columns_fmt = [column.strip() for column in manifest_meta['fileSchema'].split(",")]
-            date_columns = [col for col in columns_fmt if "Date" in col]
-            other_dtypes = {
-                col: bool if col.startswith("Is") else str 
-                for col in columns_fmt 
-                if "Date" not in col and col != "Size"
-            }
-            other_dtypes["Size"] = int
-        dtypes = other_dtypes.copy()
-        dtypes.update({key: datetime for key in date_columns})
         num_files = len(manifest_meta['files'])
-        return Schema(datashape=None,
-                      dtype=dtypes,
-                      shape=(None, len(dtypes)),
-                      npartitions=num_files,
-                      extra_metadata={
-                          'manifest_format': manifest_format,
-                          'date_columns': date_columns,
-                          'manifest_meta': manifest_meta
-                      })
+
+        if manifest_format == 'csv':
+            dtypes, extra_metadata = self._get_csv_schema(manifest_meta)
+        else:
+            raise NotImplemented
+
+        return Schema(
+            datashape=None,
+            dtype=dtypes,
+            shape=(None, len(dtypes)),
+            npartitions=num_files,
+            extra_metadata=extra_metadata
+        )
 
     def _get_partition(self, i):
         self._open_dataset()
